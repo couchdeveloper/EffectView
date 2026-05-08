@@ -125,7 +125,7 @@ extension Effect where Event == MyView.Event, Env == MyView.Env {
 
 If you pass `initialEnv`, it is captured once when the view appears. This is intentional — swapping dependencies mid-flight can cause subtle bugs where a running task started with one implementation finishes against another. 
 
-The environment value is passed as an argument to the effect's operation and action closure and can carry dependencies or configuration values.
+The environment value is passed as an argument to the effect's operation and action closure and can carry dependencies or configuration values, see custom effect example above.
 
 To apply new dependencies, recreate the view identity with `.id(...)`.
 
