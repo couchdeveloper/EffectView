@@ -360,6 +360,20 @@ return .task { input, env in
 
 ---
 
+## Contributing
+
+Contributions are welcome. Please follow the [Git workflow](Documentation/GitWorkflow.md) used in this project.
+
+This project uses [Conventional Commits](https://www.conventionalcommits.org/) for all commit messages. After cloning, run the following once to activate the commit message template:
+
+```bash
+git config commit.template .github/commit-template
+```
+
+The template is included in the repository at `.github/commit-template`.
+
+---
+
 ## License
 
 Apache License, Version 2.0

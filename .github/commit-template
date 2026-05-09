@@ -1,0 +1,30 @@
+# <type>[optional scope]: <description> --------|
+
+# <optional body> ----------------------------------------------------|
+
+# See also: [Conventional Commits](https://www.conventionalcommits.org/)
+
+# Type         | Use for                                  | Version bump?
+# ------------ | ---------------------------------------- | -------------
+# feat         | New feature                              | Yes — minor
+# fix          | Bug fix                                  | Yes — patch
+# feat! / fix! | Breaking change                          | Yes — major
+# docs         | README or documentation changes          | No
+# ci           | CI configuration and scripts             | No
+# chore        | Maintenance, dependency updates          | No
+# test         | Adding or fixing tests only              | No
+# build        | Build system or tooling changes          | No
+# refactor     | Code change with no behaviour change     | No
+# style        | Formatting, whitespace — no logic change | No
+# perf         | Performance improvement                  | No
+
+# Breaking changes: add "!" after the type, e.g.:
+#   feat!: drop iOS 16 support
+# or include "BREAKING CHANGE:" in the footer.
+#
+# Examples:
+#   feat: add retry logic to network requests
+#   fix(auth): handle expired token gracefully
+#   docs: update README intro for MVVM developers
+#   ci: fix release workflow permissions
+#   chore: bump swift-collections to 1.1.4

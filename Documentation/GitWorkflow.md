@@ -4,6 +4,32 @@ This guide describes the full lifecycle of a feature branch: from creation to a 
 
 ---
 
+## Commit message convention
+
+This workflow uses [Conventional Commits](https://www.conventionalcommits.org/) for all commit messages on `main`. The format is:
+
+```
+<type>[optional scope]: <description>
+```
+
+Common types:
+
+| Type | Use for | Version bump? |
+|---|---|---|
+| `feat` | New feature | Yes — minor |
+| `fix` | Bug fix | Yes — patch |
+| `feat!` / `fix!` | Breaking change | Yes — major |
+| `docs` | README or documentation changes | No |
+| `ci` | CI configuration and scripts | No |
+| `chore` | Maintenance, dependency updates | No |
+| `test` | Adding or fixing tests only | No |
+| `build` | Build system or tooling changes | No |
+| `refactor` | Code change with no behaviour change | No |
+
+Only `feat`, `fix`, and breaking changes (marked with `!`) require a new version tag. Everything else can be merged without bumping the version.
+
+---
+
 ## 1. Start from a clean main
 
 ```bash
