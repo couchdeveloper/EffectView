@@ -3,19 +3,38 @@
 [![](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fcouchdeveloper%2FEffectView%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/couchdeveloper/EffectView)
 [![](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fcouchdeveloper%2FEffectView%2Fbadge%3Ftype%3Dplatforms)](https://swiftpackageindex.com/couchdeveloper/EffectView)
 
-A small SwiftUI helper for Elm-style event handling with explicit side effects.
+A concrete SwiftUI pattern for state, events, and async effects — without an `@Observable` class, without scattered ad-hoc methods, favouring an event-driven, MVI-style design.
 
 - Single mutation point via `update`.
 - Explicit effects (`task`, `action`, `cancel`).
 - Optional dependency environment captured for the view lifetime.
 
-## Core principles and benefits
+## The problem with the conventional approach
 
-- Clear separation between pure state updates and side effects.
-- Effects are explicit, managed, and cancellable.
-- Deterministic update loop with a single mutation point.
-- Great testability: update logic can be exercised in isolation.
+In a typical SwiftUI view backed by an `@Observable` ViewModel, state is mutated from many places — `onAppear`, button handlers, async task completions, timers. As the view grows:
 
+- Two tasks can race to update the same property.
+- An `isLoading` flag gets set to `false` before a second request finishes.
+- A cancelled task still calls back and overwrites fresh state.
+- Testing requires constructing the whole ViewModel and observing side effects.
+
+None of these are bugs you wrote on purpose. They're structural: there's no single, authoritative place that says "given this state and this event, here is the new state".
+
+EffectView gives you that place.
+
+## What you get
+
+- **One transition function owns all state changes.** `update` takes the current state and an event, and returns new state plus an optional effect — no `async`, no network calls inside it, just logic. The same event on the same state always produces the same outcome. Nothing else in the view can mutate state.
+- **Finite state machine rigour, without the ceremony.** All transitions live in one exhaustive `switch` over your `Event` enum. The compiler tells you when you've missed a case. No hidden paths, no forgotten edge cases.
+- **Async work is explicit and named.** Nothing runs unless `update` returned an `Effect`. Tasks are tracked by name, automatically cancelled when the view disappears, and replaced if re-issued.
+- **Test the entire view logic without a simulator.** Because `update` is a transition function with no async or network calls inside it, you can drive state, events, and async effects from a plain XCTest — no SwiftUI, no `@MainActor`, no mocking framework.
+
+
+## How it maps to patterns you know
+
+If you've used **VIPER**, think of `update` as the Presenter and Interactor collapsed into a single transition function. Events are inputs from the View; effects are the work the Interactor would kick off. The key difference: nothing executes inside `update` — it only *describes* what should happen. The library executes it.
+
+If you use **MVVM with `@Observable`**, `ViewState` replaces your ViewModel's published properties, and `Event` replaces your ViewModel's public methods. The mental shift is that instead of calling `viewModel.loadMovies()` imperatively, you send an event and `update` decides what effect to run.
 
 ## Installation
 
@@ -32,7 +51,7 @@ Then add `EffectView` to your target dependencies.
 
 1. **Define `State` and `Event`.** `State` is a plain value type holding everything the view needs to render. `Event` is an enum of all user actions and system notifications that can change state.
 
-2. **Define a pure `update` function.** A `static` function that takes the current state and an event, mutates state in place, and optionally returns an `Effect` to run or cancel. No async, no throwing — just a switch.
+2. **Define the transition function `update`.** A `static` function that takes the current state and an event, mutates state in place, and optionally returns an `Effect` to run or cancel. No async, no throwing — just a switch.
 
 3. **Render and send.** The `EffectView` content closure receives the current state and a `send` function. Render state, and call `send` for user actions.
 
@@ -81,6 +100,24 @@ struct CounterView: View {
     }
 }
 ```
+
+## What would take 20 lines in a ViewModel takes 5 here
+
+Live search with automatic cancel-on-type — a task named `"search"` is automatically cancelled and restarted every time the query changes:
+
+```swift
+// update:
+case .queryChanged(let q):
+    state.query = q
+    return .task(name: "search") { input, env in
+        try? await Task.sleep(for: .milliseconds(300))
+        guard !Task.isCancelled else { return }
+        let results = await env.search(q)
+        input(.resultsLoaded(results))
+    }
+```
+
+No manual `Task` handles. No `debounce` publisher chain. No flag to reset.
 
 ## Behavior notes
 
