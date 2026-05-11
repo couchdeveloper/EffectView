@@ -6,6 +6,48 @@ This article walks through those walls one by one, and shows how `EffectView` ad
 
 ---
 
+## The fundamental tension: event-driven systems and async/await
+
+`EffectView` is an event-driven system. State only changes in response to an event processed by `update`. This is the property that makes state transitions auditable, testable, and race-free.
+
+But event-driven systems have a structural limitation: **you cannot directly `await` a logical operation**. You can only fire an event and move on:
+
+```swift
+input.send(.fetch)
+// ... that's it. No return value. No error. No completion signal.
+```
+
+The result of the fetch arrives later, indirectly, as a state change triggered by a `.loaded` or `.loadFailed` event. To know when the operation is complete, you have to observe state — which is cumbersome every time you need to bridge between the event-driven world and a caller that expects `async`/`await` semantics.
+
+This friction shows up acutely with SwiftUI's `.refreshable` modifier. It needs something to `await` — a suspension that holds the system refresh spinner until the work is genuinely done. An event-driven system has no natural answer for this. Sending `.refresh` returns immediately; the spinner would dismiss before the data has arrived.
+
+The same problem appears anywhere a caller needs to know when an event's consequences have fully settled: orchestrating multi-step flows in tests, chaining operations in response to user gestures, or coordinating with any async API that expects a completion signal.
+
+### Bridging the gap: three dispatch strategies
+
+`Input` provides three methods that give you precise control over how much of the event chain you wait for:
+
+```swift
+input(.loaded(items))             // fire-and-forget: schedules event, returns immediately
+await input.send(.loaded(items))  // wait until update() has run
+await input.perform(.loaded(items)) // wait until update() *and all resulting effects* have settled
+```
+
+`perform` is the full bridge. It threads a continuation through the entire effect chain — if `.loaded` returns another effect, and that effect eventually completes, `perform` resumes only after all of it has settled. The call site reads like ordinary async/await code while the FSM continues to own all state mutations:
+
+```swift
+// In a .refreshable block — the spinner holds until the full load cycle is complete:
+await input.perform(.refresh)
+
+// In a test — assert state only after the operation has fully settled:
+await input.perform(.load)
+#expect(state.items.count == 20)
+```
+
+This is what makes the three strategies genuinely powerful — not the methods themselves, but that they let you **express synchronisation intent explicitly at the call site**, selecting exactly how much of the event-driven world you need to wait for, without changing anything else about the system.
+
+---
+
 ## The `.task` modifier and its limits
 
 ### Task lifetime is tied to rendering, not logic
@@ -86,9 +128,19 @@ List(state.items, id: \.self) { Text($0) }
 case .refresh:
     return .task(name: "refresh") { input, env in
         let items = try await env.fetch()
-        input.enqueue(.loaded(items))
+        await input.perform(.loaded(items))
     }
 ```
+
+The three dispatch strategies on `Input` differ in what they wait for:
+
+- **`input(.loaded(items))`** — calls `enqueue`, which schedules the event on the `@MainActor` and returns immediately. The task closure exits before `update` processes `.loaded(items)`, so the outer `perform(.refresh)` continuation resumes before the state is updated. The spinner disappears too early.
+
+- **`await input.send(.loaded(items))`** — hops to the `@MainActor` and runs `update(.loaded(items))` synchronously before returning. The state is updated before the closure exits. However, `send` passes a `nil` continuation, so if `.loaded` itself returns an effect — another task, an action chain — that effect's completion is not awaited. The closure exits as soon as `update` returns, regardless of what the effect does next.
+
+- **`await input.perform(.loaded(items))`** — threads the outer continuation through the entire effect chain triggered by `.loaded(items)`. The closure only exits once `update` has run *and* any effect it returned has fully settled. This is the correct choice here: it handles the simple case identically to `send`, and correctly extends the wait if `.loaded` ever grows to return an effect of its own.
+
+The rule of thumb: use `perform` when the result needs to be complete before the caller resumes; use `enqueue` for fire-and-forget signals where ordering doesn't matter.
 
 ### Cancel on user intent
 
