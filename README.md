@@ -360,6 +360,53 @@ return .task { input, env in
 
 ---
 
+### Observe an external `@Observable` store
+
+Use `.observe` to mirror a property from an external `@Observable` object into `ViewState`. The handler is called with the initial value immediately and again on every subsequent change. The named task is cancelled automatically when the view disappears.
+
+Two overloads are available depending on where the observable object comes from.
+
+**When the store lives in `Env`** — use the env key path overload. The object is resolved inside the task, so nothing is captured at `update` time:
+
+```swift
+struct Env: Identifiable {
+    let id: UUID = .init()
+    let store: CounterStore       // an @Observable @MainActor object
+}
+
+// update:
+case .start:
+    return .observe(\.store, keyPath: \.count, name: "observe-count") { input, count in
+        await input.perform(.countChanged(count))  // perform waits before the next cycle
+    }
+
+case .countChanged(let count):
+    state.count = count   // the only path that writes the mirrored value
+    return nil
+
+case .incrementTapped:
+    return .task { _, env in
+        await env.store.send(.increment)  // write via the store's own event API
+    }
+```
+
+**When the store comes from elsewhere** — for example imported into the view by a previous event — use the direct overload and pass the object itself:
+
+```swift
+// update:
+case .storeReceived(let store):
+    state.store = store
+    return .observe(store, keyPath: \.count, name: "observe-count") { input, count in
+        await input.perform(.countChanged(count))
+    }
+```
+
+The effect holds the object weakly; the observation loop exits automatically if the object is deallocated before the task is cancelled.
+
+> **Requires** iOS 17 / macOS 14 or later (the `@Observable` macro minimum deployment).
+
+---
+
 ## Contributing
 
 Contributions are welcome. Please follow the [Git workflow](Documentation/GitWorkflow.md) used in this project.
