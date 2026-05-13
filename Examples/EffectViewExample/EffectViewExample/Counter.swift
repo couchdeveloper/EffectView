@@ -50,11 +50,11 @@ extension Counter {
         private static func update(
             state: inout ViewState,
             event: Event
-        ) -> Effect<Event, Env>? {
+        ) -> Effect<Event, Env, Void>? {
             switch event {
             case .start:
                 state.counter = 0
-                return .task(name: "Counter") { input, env in
+                return .run(name: "Counter") { input, env in
                     while true {
                         do {
                             try await Task.sleep(nanoseconds: 1_000_000_000) // 1 sec

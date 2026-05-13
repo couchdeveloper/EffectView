@@ -106,7 +106,7 @@ struct EffectViewTests {
 
         var appearCount = 0
         let view = TestView(initialState: State()) { binding in
-            EffectView(state: binding, update: { _, _ -> Effect<Event, Void>? in nil }) { _, _ in
+            EffectView(state: binding, update: { _, _ -> Effect<Event, Void, Void>? in nil }) { _, _ in
                 Color.clear.onAppear { appearCount += 1 }
             }
         }
@@ -122,7 +122,7 @@ struct EffectViewTests {
 
         var capturedLabel: String?
         let view = TestView(initialState: State(label: "custom")) { binding in
-            EffectView(state: binding, update: { _, _ -> Effect<Event, Void>? in nil }) { state, _ in
+            EffectView(state: binding, update: { _, _ -> Effect<Event, Void, Void>? in nil }) { state, _ in
                 Color.clear.onAppear { capturedLabel = state.label }
             }
         }
@@ -138,7 +138,7 @@ struct EffectViewTests {
         struct State: Equatable { var count = 0 }
         enum Event: Sendable { case increment }
 
-        var capturedInput: Input<Event>?
+        var capturedInput: Input<Event, Void>?
         var observedValues: [Int] = []
         let expectation = Expectation()
         
@@ -147,7 +147,7 @@ struct EffectViewTests {
         let view = TestView(initialState: State()) { binding in
             EffectView(
                 state: binding,
-                update: { state, _ -> Effect<Event, Void>? in state.count += 1; return nil }
+                update: { state, _ -> Effect<Event, Void, Void>? in state.count += 1; return nil }
             ) { state, input in
                 Text("\(state.count)")
                     .onAppear {
@@ -177,14 +177,14 @@ struct EffectViewTests {
         class RenderCounter: @unchecked Sendable { var count = 0 }
         let counter = RenderCounter()
         let expectation = Expectation()
-        var capturedInput: Input<Event>?
+        var capturedInput: Input<Event, Void>?
 
         let timeout: UInt64 = 5_000_000_000
 
         let view = TestView(initialState: State.off) { binding in
             EffectView(
                 state: binding,
-                update: { state, _ -> Effect<Event, Void>? in state = (state == .off ? .on : .off); return nil }
+                update: { state, _ -> Effect<Event, Void, Void>? in state = (state == .off ? .on : .off); return nil }
             ) { state, input in
                 Text(state == .on ? "on" : "off")
                     .onAppear {
@@ -223,7 +223,7 @@ struct EffectViewTests {
             EffectView(
                 state: binding,
                 initialEvent: .start,
-                update: { _, event -> Effect<Event, Void>? in
+                update: { _, event -> Effect<Event, Void, Void>? in
                     // Note: update with the initial event will be called before
                     // onAppear will be called
                     log.events.append(event)
@@ -240,18 +240,18 @@ struct EffectViewTests {
         cleanup(window)
     }
 
-    // MARK: - perform
+    // MARK: - request
 
-    @Test func performSuspendsUntilUpdateCompletes() async throws {
+    @Test func requestSuspendsUntilUpdateCompletes() async throws {
         struct State: Equatable { var count = 0 }
         enum Event: Sendable { case increment }
 
-        var capturedInput: Input<Event>?
+        var capturedInput: Input<Event, Void>?
 
         let view = TestView(initialState: State()) { binding in
             EffectView(
                 state: binding,
-                update: { state, _ -> Effect<Event, Void>? in state.count += 1; return nil }
+                update: { state, _ -> Effect<Event, Void, Void>? in state.count += 1; return nil }
             ) { _, input in
                 Color.clear.onAppear {
                     capturedInput = input
@@ -262,11 +262,11 @@ struct EffectViewTests {
         let (_, window) = try await embedInWindowAndMakeKey(view)
         guard let input = capturedInput else { Issue.record("Input not captured"); return }
 
-        // Each perform() suspends until the update loop has processed the event.
-        // Three sequential performs must complete without deadlock or timeout.
-        await input.perform(.increment)
-        await input.perform(.increment)
-        await input.perform(.increment)
+        // Each request() suspends until the update loop has processed the event.
+        // Three sequential requests must complete without deadlock or timeout.
+        await input.request(.increment)
+        await input.request(.increment)
+        await input.request(.increment)
         cleanup(window)
     }
 
@@ -277,7 +277,7 @@ struct EffectViewTests {
         class LogCapture: @unchecked Sendable { var entries: [Int] = [] }
         let captured = LogCapture()
 
-        var capturedInput: Input<Event>?
+        var capturedInput: Input<Event, Void>?
         let doneExpectation  = Expectation()
 
         let timeout: UInt64 = 5_000_000_000
@@ -285,7 +285,7 @@ struct EffectViewTests {
         let view = TestView(initialState: State()) { binding in
             EffectView(
                 state: binding,
-                update: { state, event -> Effect<Event, Void>? in
+                update: { state, event -> Effect<Event, Void, Void>? in
                     if case .record(let n) = event { state.log.append(n) }
                     return nil
                 }
@@ -304,10 +304,48 @@ struct EffectViewTests {
         let (_, window) = try await embedInWindowAndMakeKey(view)
         guard let input = capturedInput else { Issue.record("Input not captured"); return }
 
-        // perform() guarantees each update completes before the next event is sent.
-        for i in 1...5 { await input.perform(.record(i)) }
+        // request() guarantees each update completes before the next event is sent.
+        for i in 1...5 { await input.request(.record(i)) }
         try await doneExpectation.await(nanoseconds: timeout)
         #expect(captured.entries == [1, 2, 3, 4, 5])
+        cleanup(window)
+    }
+
+    @Test func requestReturnsOutputFromTaskClosure() async throws {
+        struct State: Equatable { var value: String = "" }
+        enum Event: Sendable { case load, loaded(String) }
+        typealias Output = String
+
+        var capturedInput: Input<Event, Output>?
+
+        let view = TestView(initialState: State()) { binding in
+            EffectView(
+                state: binding,
+                update: { (state, event) -> Effect<Event, Void, Output>? in
+                    switch event {
+                    case .load:
+                        return .request(name: "load") { input, _ in
+                            // Simulate async work, fire a completion event to update state,
+                            // then return the output value directly from the task closure.
+                            let result = "hello"
+                            await input.request(.loaded(result))   // drives state; return discarded
+                            return result                           // this becomes the Output?
+                        }
+                    case .loaded(let v):
+                        state.value = v
+                        return nil
+                    }
+                }
+            ) { _, input in
+                Color.clear.onAppear { capturedInput = input }
+            }
+        }
+
+        let (_, window) = try await embedInWindowAndMakeKey(view)
+        guard let input = capturedInput else { Issue.record("Input not captured"); return }
+
+        let output = await input.request(.load)
+        #expect(output == "hello")
         cleanup(window)
     }
 
@@ -317,7 +355,7 @@ struct EffectViewTests {
         struct State: Equatable { var loaded = false }
         enum Event: Sendable { case load, didLoad }
 
-        var capturedInput: Input<Event>?
+        var capturedInput: Input<Event, Void>?
         let loadedExpectation = Expectation()
 
         let timeout: UInt64 = 5_000_000_000
@@ -325,7 +363,7 @@ struct EffectViewTests {
         let view = TestView(initialState: State()) { binding in
             EffectView(
                 state: binding,
-                update: { state, event -> Effect<Event, Void>? in
+                update: { state, event -> Effect<Event, Void, Void>? in
                     switch event {
                     case .load:
                         return .task(name: "fetch") { input, _ in input.enqueue(.didLoad) }
@@ -356,7 +394,7 @@ struct EffectViewTests {
         class TickCounter: @unchecked Sendable { var count = 0 }
         let tickCounter = TickCounter()
 
-        var capturedInput: Input<Event>?
+        var capturedInput: Input<Event, Void>?
         let twoTicksExpectation = Expectation(minFulfillCount: 2)
         let stoppedExpectation = Expectation()
 
@@ -365,7 +403,7 @@ struct EffectViewTests {
         let view = TestView(initialState: State()) { binding in
             EffectView(
                 state: binding,
-                update: { state, event -> Effect<Event, Void>? in
+                update: { state, event -> Effect<Event, Void, Void>? in
                     switch event {
                     case .start:
                         state.running = true
@@ -421,14 +459,14 @@ struct EffectViewTests {
         struct State: Equatable { var phase = 0 }
         enum Event: Sendable { case begin, step, done }
 
-        var capturedInput: Input<Event>?
+        var capturedInput: Input<Event, Void>?
         let readyExpectation = Expectation()
         let doneExpectation = Expectation()
 
         let view = TestView(initialState: State()) { binding in
             EffectView(
                 state: binding,
-                update: { state, event -> Effect<Event, Void>? in
+                update: { state, event -> Effect<Event, Void, Void>? in
                     switch event {
                     case .begin: state.phase = 1; return .action { _ in .step }
                     case .step:  state.phase = 2; return .action { _ in .done }
@@ -450,8 +488,8 @@ struct EffectViewTests {
         let (_, window) = try await embedInWindowAndMakeKey(view)
         try await readyExpectation.await(nanoseconds: 5_000_000_000)
 
-        // perform() awaits the entire synchronous chain: begin → step → done.
-        await capturedInput?.perform(.begin)
+        // request() awaits the entire synchronous chain: begin → step → done.
+        await capturedInput?.request(.begin)
         try await doneExpectation.await(nanoseconds: 5_000_000_000)
         cleanup(window)
     }
@@ -460,7 +498,7 @@ struct EffectViewTests {
         struct State: Equatable { var ticks = 0 }
         enum Event: Sendable { case startFirst, refresh, tick }
 
-        var capturedInput: Input<Event>?
+        var capturedInput: Input<Event, Void>?
         let tickExpectation = Expectation()
         let cancelExpectation = Expectation()
         
@@ -469,7 +507,7 @@ struct EffectViewTests {
         let view = TestView(initialState: State()) { binding in
             EffectView(
                 state: binding,
-                update: { (state, event) -> Effect<Event, Void>? in
+                update: { (state, event) -> Effect<Event, Void, Void>? in
                     switch event {
                     case .startFirst:
                         // Long-running task that never ticks on its own.
@@ -517,7 +555,7 @@ struct EffectViewTests {
         struct State: Equatable { var count = 0 }
         enum Event: Sendable { case increment }
 
-        var capturedInput: Input<Event>?
+        var capturedInput: Input<Event, Void>?
         let resetExpectation = Expectation()
         var countsOnAppear: [Int] = []
 
@@ -527,7 +565,7 @@ struct EffectViewTests {
             TestView(initialState: State()) { binding in
                 EffectView(
                     state: binding,
-                    update: { state, _ -> Effect<Event, Void>? in state.count += 1; return nil }
+                    update: { state, _ -> Effect<Event, Void, Void>? in state.count += 1; return nil }
                 ) { _, input in
                     Color.clear.onAppear {
                         capturedInput = input
@@ -538,15 +576,15 @@ struct EffectViewTests {
 
         guard let input = capturedInput else { Issue.record("Input not captured"); return }
 
-        await input.perform(.increment)
-        await input.perform(.increment)
+        await input.request(.increment)
+        await input.request(.increment)
 
         // Replace the root view with a fresh instance at initial state.
         hostingController.rootView = AnyView(
             TestView(initialState: State()) { binding in
                 EffectView(
                     state: binding,
-                    update: { state, _ -> Effect<Event, Void>? in state.count += 1; return nil }
+                    update: { state, _ -> Effect<Event, Void, Void>? in state.count += 1; return nil }
                 ) { state, _ in
                     Color.clear.onAppear {
                         countsOnAppear.append(state.count)
@@ -568,7 +606,7 @@ struct EffectViewTests {
         enum Event: Sendable { case fetch, loaded(String) }
         struct Env: Sendable { var value: String }
 
-        var capturedInput: Input<Event>?
+        var capturedInput: Input<Event, Void>?
         let loadedExpectation = Expectation()
 
         let timeout: UInt64 = 5_000_000_000
@@ -577,7 +615,7 @@ struct EffectViewTests {
             EffectView(
                 state: binding,
                 initialEnv: Env(value: "hello from env"),
-                update: { state, event -> Effect<Event, Env>? in
+                update: { state, event -> Effect<Event, Env, Void>? in
                     switch event {
                     case .fetch:
                         return .task(name: "fetch") { input, env in
@@ -641,7 +679,7 @@ private enum CounterEvent: Equatable, Sendable {
 private func counterUpdate(
     state: inout CounterState,
     event: CounterEvent
-) -> Effect<CounterEvent, Void>? {
+) -> Effect<CounterEvent, Void, Void>? {
     switch event {
     case .increment:
         state.count += 1
@@ -690,7 +728,7 @@ private struct LoadFetchError: Error, LocalizedError {
 private func loaderUpdate(
     state: inout LoaderState,
     event: LoaderEvent
-) -> Effect<LoaderEvent, LoaderEnv>? {
+) -> Effect<LoaderEvent, LoaderEnv, Void>? {
     switch event {
     case .load:
         state.isLoading = true
@@ -801,7 +839,7 @@ struct EffectTypeTests {
 
     @Test func actionEffectInvokesClosureAndReturnsEvent() {
         enum Ev: Equatable, Sendable { case a, b }
-        let effect = Effect<Ev, Void>.action { _ in .b }
+        let effect = Effect<Ev, Void, Void>.action { _ in .b }
         guard case .action(let run) = effect else {
             Issue.record("Expected .action")
             return
@@ -811,7 +849,7 @@ struct EffectTypeTests {
 
     @Test func actionEffectCanReturnNil() {
         enum Ev: Equatable, Sendable { case a }
-        let effect = Effect<Ev, Void>.action { _ in nil }
+        let effect = Effect<Ev, Void, Void>.action { _ in nil }
         guard case .action(let run) = effect else {
             Issue.record("Expected .action")
             return
@@ -821,7 +859,7 @@ struct EffectTypeTests {
 
     @Test func sequenceContainsOrderedEffects() {
         enum Ev: Equatable, Sendable { case done }
-        let effect = Effect<Ev, Void>.sequence([
+        let effect = Effect<Ev, Void, Void>.sequence([
             .cancel("old"),
             .task(name: "new") { _, _ in }
         ])
@@ -859,7 +897,7 @@ struct TaskOperationTests {
         }
 
         let spy = EventSpy<LoaderEvent>()
-        let input = Input<LoaderEvent> { [spy] event, _, _ in spy.received.append(event) }
+        let input = Input<LoaderEvent, Void> { [spy] event, _, _ in spy.received.append(event) }
         await operation(input, LoaderEnv(fetch: { ["X", "Y"] }))
         await Task.yield()
 
@@ -874,7 +912,7 @@ struct TaskOperationTests {
         }
 
         let spy = EventSpy<LoaderEvent>()
-        let input = Input<LoaderEvent> { [spy] event, _, _ in spy.received.append(event) }
+        let input = Input<LoaderEvent, Void> { [spy] event, _, _ in spy.received.append(event) }
         await operation(input, LoaderEnv(fetch: { throw LoadFetchError(message: "timed out") }))
         await Task.yield()
 
@@ -889,7 +927,7 @@ struct TaskOperationTests {
         }
 
         let spy = EventSpy<CounterEvent>()
-        let input = Input<CounterEvent> { [spy] event, _, _ in spy.received.append(event) }
+        let input = Input<CounterEvent, Void> { [spy] event, _, _ in spy.received.append(event) }
         await operation(input, ())
         await Task.yield()
 

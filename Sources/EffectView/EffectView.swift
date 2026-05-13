@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// A SwiftUI view that manages structured side effects using an Elm-style update loop.
+/// A SwiftUI view that manages structured side effects via an Elm-style update loop.
 ///
-/// `EffectView` owns an `EffectManager` for the duration of the view's lifetime.
-/// State is owned by the caller (via `Binding`) so ancestor views can observe changes.
-/// The `update` function is the single mutation point: it receives an event, mutates
-/// state, and optionally returns an `Effect` to run or cancel.
+/// `EffectView` owns the task scheduler for the duration of its view identity.
+/// State is held by the caller via `Binding` so ancestor views can observe changes.
+/// `update` is the single mutation point: it receives an event, mutates state, and
+/// optionally returns an ``Effect`` to run or cancel.
 ///
-/// ## Basic usage (no dependencies)
+/// ### Basic usage
 ///
 /// ```swift
 /// enum Event { case increment, reset }
@@ -15,99 +15,86 @@ import SwiftUI
 ///
 /// @State private var state = MyState()
 ///
-/// EffectView(state: $state, update: { state, event -> Effect<Event, Void>? in
-///     switch event {
-///     case .increment: state.count += 1; return nil
-///     case .reset:     state.count  = 0; return nil
+/// EffectView(
+///     state: $state,
+///     update: { state, event in
+///         switch event {
+///         case .increment: state.count += 1; return nil
+///         case .reset:     state.count  = 0; return nil
+///         }
 ///     }
-/// }) { state, send in
+/// ) { state, send in
 ///     Button("\(state.count)") { send(.increment) }
 /// }
 /// ```
 ///
-/// ## Using `Env` for dependencies
+/// ### Using `Env` for dependencies
 ///
-/// Pass dependencies (clocks, network clients, etc.) via `Env`. The value is
-/// captured once when the view appears and forwarded to every effect operation.
+/// Pass dependencies (clocks, API clients, etc.) via `Env`. The value is captured
+/// once when the view appears and forwarded to every effect.
 ///
 /// ```swift
-/// struct Env { let clock: any Clock<Duration> }
+/// struct Env { let api: any APIClient }
 ///
 /// EffectView(
 ///     state: $state,
-///     initialEnv: Env(clock: ContinuousClock()),
+///     initialEnv: Env(api: liveAPI),
 ///     update: { state, event in
-///     switch event {
-///     case .start:
-///         return .run(name: "ticker") { input, env in
-///             do {
-///                 while true {
-///                     try await env.clock.sleep(for: .seconds(1))
-///                     input(.tick)
-///                 }
-///             } catch {
-///                 // cancellation or clock error — signal via event if needed
+///         switch event {
+///         case .load:
+///             return .run(name: "load") { input, env in
+///                 let data = await env.api.fetch()
+///                 input(.loaded(data))
 ///             }
+///         case .loaded(let data):
+///             state.data = data; return nil
 ///         }
-///     case .tick:  state.count += 1; return nil
-///     case .stop:  return .cancel("ticker")
 ///     }
-/// }) { state, send in
-///     Button("Start") { send(.start) }
+/// ) { state, send in
+///     Button("Load") { send(.load) }
 /// }
 /// ```
 ///
-/// ## Env changes
+/// ### Env changes
 ///
-/// If `Env` changes during the view's lifetime, running effects keep using the
-/// original captured value. This is intentional because swapping dependencies
-/// mid-flight can cause subtle bugs (for example, a task started with mock services
-/// finishing after a switch to production services). To restart the view with new
-/// dependencies, apply `.id(env)` at the call site (requires `Env: Hashable`). This
-/// destroys the old view — cancelling all tasks — and creates a fresh instance with
-/// the updated `Env`.
+/// If `Env` changes during the view's lifetime, running effects keep the original
+/// captured value. To restart with new dependencies, apply `.id(env)` at the call
+/// site (requires `Env: Hashable`). This destroys the old view — cancelling all
+/// tasks — and creates a fresh instance with the updated `Env`.
 ///
-/// ## Synchronous action chains
+/// ### Generic parameters
 ///
-/// The `.action` effect is a synchronous step that may return the next event. Each
-/// returned event is processed immediately in the same run loop before any external
-/// events are handled. This provides a deterministic sequence for setup work
-/// (e.g. create an instance, store it in state, then continue processing). The chain
-/// continues only while effects return `.action`; returning `.task` or `.cancel` ends
-/// the synchronous chain.
-///
+/// - `State`: The type of the view's mutable state.
+/// - `Event`: The event type driving state transitions.
+/// - `Env`: The dependency environment. Use `Void` for no dependencies.
+/// - `Output`: The value returned to callers of ``Input/request(_:)``.
+///   Use `Void` when no return value is needed.
+/// - `Content`: The view builder output type.
 @MainActor
 public struct EffectView<
     State,
     Event,
     Env: Sendable,
+    Output: Sendable,
     Content: View
 >: View {
     
-    @SwiftUI.State private var input: Input<Event>? = nil
+    @SwiftUI.State private var input: Input<Event, Output>? = nil
 
     private var state: Binding<State>
     private var initialEvent: Event?
     private let env: Env
-    private var update: (inout State, Event) -> Effect<Event, Env>?
-    private let content: (State, Input<Event>) -> Content
+    private var update: (inout State, Event) -> Effect<Event, Env, Output>?
+    private let content: (State, Input<Event, Output>) -> Content
     
         
-    /// Creates an `EffectView` and captures `initialEnv` and `update` for the lifetime of this view identity.
+    /// Creates an effect-managed view with a captured dependency environment.
     ///
-    /// `initialEvent`, `initialEnv`, and `update` values are captured once when the view appears the first time.
-    /// Later changes to `initialEnv` or `update` are intentionally ignored to avoid mid-flight dependency
-    /// changes during running effects. To restart with new dependencies, recreate the view identity with
-    /// `.id(...)`.
+    /// `initialEvent`, `initialEnv`, and `update` are captured once when the view
+    /// appears for the first time. Later changes are intentionally ignored to avoid
+    /// mid-flight dependency swaps during running effects. To restart with new
+    /// dependencies, use `.id(env)` at the call site (requires `Env: Hashable`).
     ///
-    /// - Parameters:
-    ///   - state: A `Binding` to the view's state, owned by the caller.
-    ///   - initialEvent: An optional initial event to send when the view appears for the first time.
-    ///   - initialEnv: An environment value to capture for the lifetime of this view identity.
-    ///   - update: A function that updates the state and returns an optional effect.
-    ///   - content: A view builder that creates the content of the view.
-    ///
-    /// ## Example:
     /// ```swift
     /// EffectView(
     ///     state: $state,
@@ -118,12 +105,19 @@ public struct EffectView<
     /// }
     /// .id(env.id)
     /// ```
+    ///
+    /// - Parameters:
+    ///   - state: A `Binding` to the view's state, owned by the caller.
+    ///   - initialEvent: An optional event sent when the view first appears.
+    ///   - initialEnv: The environment captured for this view's lifetime.
+    ///   - update: Mutates state and returns an optional ``Effect``.
+    ///   - content: Builds the view from current state and an ``Input`` handle.
     public init(
         state: Binding<State>,
         initialEvent: Event? = nil,
         initialEnv: Env,
-        update: @escaping (inout State, Event) -> Effect<Event, Env>?,
-        @ViewBuilder content: @escaping (State, Input<Event>) -> Content
+        update: @escaping (inout State, Event) -> Effect<Event, Env, Output>?,
+        @ViewBuilder content: @escaping (State, Input<Event, Output>) -> Content
     ) {
         self.state = state
         self.initialEvent = initialEvent
@@ -151,7 +145,7 @@ public struct EffectView<
             let stateBinding = self.state
             let env = self.env
             let update = self.update
-            let send = { @MainActor @Sendable (event: Event, input: Input<Event>, continuation: CheckedContinuation<Void, Never>?) in
+            let send = { @MainActor @Sendable (event: Event, input: Input<Event, Output>, continuation: CheckedContinuation<Output?, Never>?) in
                 Self.compute(
                     event: event,
                     continuation: continuation,
@@ -171,12 +165,12 @@ public struct EffectView<
     
     private static func compute(
         event: Event,
-        continuation: CheckedContinuation<Void, Never>?,
+        continuation: CheckedContinuation<Output?, Never>?,
         state: Binding<State>,
         effectManager: EffectManager,
-        input: Input<Event>,
+        input: Input<Event, Output>,
         env: Env,
-        update: (inout State, Event) -> Effect<Event, Env>?
+        update: (inout State, Event) -> Effect<Event, Env, Output>?
     ) {
         var nextEvent: Event? = event
         var cont = continuation
@@ -191,7 +185,7 @@ public struct EffectView<
                     env: env
                 )
             } else {
-                cont?.resume()
+                cont?.resume(returning: nil)
                 cont = nil
             }
         }
@@ -199,20 +193,20 @@ public struct EffectView<
     }
     
     private static func executeEffect(
-        _ effect: Effect<Event, Env>,
-        continuation: CheckedContinuation<Void, Never>?,
+        _ effect: Effect<Event, Env, Output>,
+        continuation: CheckedContinuation<Output?, Never>?,
         effectManager: EffectManager,
-        input: Input<Event>,
+        input: Input<Event, Output>,
         env: Env
-    ) -> (Event?, CheckedContinuation<Void, Never>?) {
+    ) -> (Event?, CheckedContinuation<Output?, Never>?) {
         switch effect {
         case .task(name: let name, priority: let priority, operation: let operation):
             effectManager.add(
                 name: name,
                 priority: priority,
                 operation: {
-                    await operation(input, env)
-                    continuation?.resume()
+                    let output = await operation(input, env)
+                    continuation?.resume(returning: output)
                 }
             )
             return (nil, nil)
@@ -223,19 +217,19 @@ public struct EffectView<
         case .action(action: let action):
             let event = action(env)
             if event == nil {
-                continuation?.resume()
+                continuation?.resume(returning: nil)
                 return (nil, nil)
             }
             return (event, continuation)
 
         case .cancel(let name):
             effectManager.cancel(name: name)
-            continuation?.resume()
+            continuation?.resume(returning: nil)
             return (nil, nil)
 
         case .sequence(let effects):
             guard let last = effects.last else {
-                continuation?.resume()
+                continuation?.resume(returning: nil)
                 return (nil, nil)
             }
             for effect in effects.dropLast() {
@@ -248,38 +242,31 @@ public struct EffectView<
 
 extension EffectView where Env == Void {
     
-    /// Creates an `EffectView` and captures `update` for the lifetime of this view identity.
-    /// 
-    /// The `update` value is captured once when the view appears the first time.
-    /// Later changes to `update` are intentionally ignored.
-    /// 
-    /// `initialEvent`, and `update` values are captured once when the view appears the first time.
-    /// Later changes to `initialEnv` or `update` are intentionally ignored to avoid mid-flight dependency
-    /// changes during running effects. To restart with new dependencies, recreate the view identity with
-    /// `.id(...)`.
+    /// Creates an effect-managed view with no external dependencies.
     ///
-    /// - Parameters:
-    ///   - state: A `Binding` to the view's state, owned by the caller.
-    ///   - initialEvent: An optional initial event to send when the view appears for the first time.
-    ///   - update: A function that updates the state and returns an optional effect.
-    ///   - content: A view builder that creates the content of the view.
-    /// 
-    /// ## Example:
+    /// `initialEvent` and `update` are captured once when the view appears for
+    /// the first time. Later changes to `update` are intentionally ignored.
+    /// To reset the view, recreate its identity with `.id(...)`.
+    ///
     /// ```swift
     /// EffectView(
     ///     state: $state,
-    ///     initialEnv: env,
     ///     update: Self.update
     /// ) { state, send in
     ///     Button("Start") { send(.start) }
     /// }
-    /// .id(env.id)
     /// ```
+    ///
+    /// - Parameters:
+    ///   - state: A `Binding` to the view's state, owned by the caller.
+    ///   - initialEvent: An optional event sent when the view first appears.
+    ///   - update: Mutates state and returns an optional ``Effect``.
+    ///   - content: Builds the view from current state and an ``Input`` handle.
     public init(
         state: Binding<State>,
         initialEvent: Event? = nil,
-        update: @escaping (inout State, Event) -> Effect<Event, Void>?,
-        @ViewBuilder content: @escaping (State, Input<Event>) -> Content
+        update: @escaping (inout State, Event) -> Effect<Event, Void, Output>?,
+        @ViewBuilder content: @escaping (State, Input<Event, Output>) -> Content
     ) {
         self.state = state
         self.initialEvent = initialEvent

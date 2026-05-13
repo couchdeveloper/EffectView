@@ -131,8 +131,11 @@ The return type of `update`. Controls what happens after a state mutation.
 | Case | Purpose |
 |---|---|
 | `.task(name:priority:operation:)` | Starts an async operation. Named tasks are automatically cancelled and replaced if re-issued. |
-| `.action(action:)` | Synchronous step; the returned `Event?` is processed immediately in the same run loop. |
+| `.action(action:)` | Synchronous step; the returned `Event?` is processed immediately in the same run loop. See warning below. |
 | `.cancel(name)` | Cancels a running named task. |
+
+> **Warning — `.action` cycles block the main thread.**  
+> Because `.action` chains are unwound synchronously on the `@MainActor`, a cycle in your `update` function — e.g. `.ping` → `.action { .pong }` → `.action { .ping }` → … — will loop forever and hang the app. Keep action chains finite and acyclic. If you need iterative or potentially unbounded work, use a `.task` instead, where each iteration suspends and yields control back to the system.
 
 Returning `nil` means no effect — state was mutated but no async work is needed.
 
@@ -319,6 +322,8 @@ case .loadConfig:
     state.config = Config.default
     return .task { input, env in … }
 ```
+
+> **Warning:** Action chains run entirely on the `@MainActor` without yielding. A cycle — two events that each produce an `.action` pointing back at the other — will hang the main thread. Prefer `.task` for any work that could repeat or loop.
 
 ---
 

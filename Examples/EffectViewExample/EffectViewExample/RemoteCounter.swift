@@ -75,7 +75,7 @@ extension RemoteCounter.Views {
         static func update(
             _ state: inout ViewState,
             event: Event
-        ) -> Effect<Event, Env>? {
+        ) -> Effect<Event, Env, Void>? {
             switch event {
 
             case .start:
@@ -84,7 +84,7 @@ extension RemoteCounter.Views {
                      name: "observe-store-count"
                 ) { @MainActor input, value in
                     print("observe-store-count: ", value)
-                    await input.perform(.storeChanged(newCount: value))
+                    await input.request(.storeChanged(newCount: value))
                 }
 
             case .storeChanged(let newCount):
@@ -96,17 +96,17 @@ extension RemoteCounter.Views {
                 return nil
 
             case .incrementTapped:
-                return .task { _, env in
+                return .run { _, env in
                     await env.store.send(.increment)
                 }
 
             case .decrementTapped:
-                return .task { _, env in
+                return .run { _, env in
                     await env.store.send(.decrement)
                 }
 
             case .resetTapped:
-                return .task { _, env in
+                return .run { _, env in
                     await env.store.send(.reset)
                 }
             }

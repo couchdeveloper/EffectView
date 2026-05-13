@@ -83,7 +83,7 @@ extension Movies {
                     case .content(let movies):
                         List(movies, rowContent: MovieRow.init)
                             .refreshable {
-                                await input.perform(.refresh)
+                                await input.request(.refresh)
                             }
                     }
                     
@@ -154,7 +154,7 @@ extension Movies.MovieListView {
     }
 
     @MainActor
-    static func update(state: inout ViewState, event: Event) -> Effect<Event, Movies.Env>? {
+    static func update(state: inout ViewState, event: Event) -> Effect<Event, Movies.Env, Void>? {
         switch event {
         case .load:
             // Guard against refresh: can only race with programmatic load triggers
@@ -204,7 +204,7 @@ extension Movies.MovieListView {
 
 extension Effect where Event == Movies.MovieListView.Event, Env == Movies.Env {
     static func loadMovies() -> Self {
-        .task(name: "load") { input, env in
+        .run(name: "load") { input, env in
             do {
                 let movies = try await env.movieFetch()
                 input(.loaded(movies))
@@ -216,7 +216,7 @@ extension Effect where Event == Movies.MovieListView.Event, Env == Movies.Env {
 
     static func refreshMovies() -> Self {
         // Note: a refresh action
-        .task(name: "refresh") { input, env in
+        .run(name: "refresh") { input, env in
             do {
                 let movies = try await env.movieFetch()
                 input(.loaded(movies))

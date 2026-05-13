@@ -4,21 +4,22 @@ import Observation
 
 extension Effect {
 
-    /// Observes a key path on an `@Observable` object resolved from the environment,
-    /// dispatching events as the value changes.
+    /// Observes a key path on an `@Observable` object resolved from the environment.
     ///
     /// The handler is invoked with the **initial value** immediately, then again on every
     /// subsequent change, until the task is cancelled or the object is deallocated.
     ///
     /// The object is resolved from the environment inside the task, so the effect captures
-    /// only a key path rather than the object itself. Use ``Input/perform(_:)`` in the
+    /// only a key path rather than the object itself. Use ``Input/request(_:)`` in the
     /// handler so the loop waits for the view to settle before advancing:
     ///
     /// ```swift
     /// // update:
     /// case .start:
-    ///     return .observe(\.store, keyPath: \.count) { input, count in
-    ///         await input.perform(.countChanged(count))
+    ///     return .observe(
+    ///         \.store, keyPath: \.count
+    ///     ) { input, count in
+    ///         await input.request(.countChanged(count))
     ///     }
     /// ```
     ///
@@ -32,7 +33,7 @@ extension Effect {
     ///   - name: Optional name for the underlying task. Defaults to `"observe"`.
     ///   - priority: Optional `TaskPriority` for the underlying task.
     ///   - handler: Called with `input` and the current value on the initial read and on
-    ///     every subsequent change. `async` — use `await input.perform(…)` to wait for the
+    ///     every subsequent change. `async` — use `await input.request(…)` to wait for the
     ///     view to settle before the next observation cycle.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     public static func observe<Object, Value>(
@@ -40,7 +41,7 @@ extension Effect {
         keyPath: KeyPath<Object, Value>,
         name: String? = "observe",
         priority: TaskPriority? = nil,
-        handler: @escaping @MainActor @Sendable (Input<Event>, Value) async -> Void
+        handler: @escaping @MainActor @Sendable (Input<Event, Output>, Value) async -> Void
     ) -> Self
     where Object: Observable & AnyObject & Sendable, Value: Sendable
     {
@@ -51,24 +52,27 @@ extension Effect {
             await observeKeyPath(object, keyPath: box.keyPath) { value in
                 await handler(input, value)
             }
+            return nil
         }
     } 
 
-    /// Observes a key path on an `@Observable` object and dispatches events as values change.
+    /// Observes a key path on a directly provided `@Observable` object.
     ///
     /// The handler is invoked with the **initial value** immediately, then again on every
     /// subsequent change, until the task is cancelled or the object is deallocated.
     ///
     /// The `input` parameter gives the handler the same three dispatch strategies
-    /// (``Input/enqueue(_:)``, ``Input/send(_:)``, ``Input/perform(_:)``) available in any
-    /// other effect. For observation you will typically want ``Input/perform(_:)`` so the loop
+    /// (``Input/enqueue(_:)``, ``Input/send(_:)``, ``Input/request(_:)``) available in any
+    /// other effect. For observation you will typically want ``Input/request(_:)`` so the loop
     /// waits for the EffectView to process each change before advancing to the next one:
     ///
     /// ```swift
     /// // update:
     /// case .storeReceived(let store):
-    ///     return .observe(store, keyPath: \.count) { input, count in
-    ///         await input.perform(.countChanged(count))
+    ///     return .observe(
+    ///         store, keyPath: \.count
+    ///     ) { input, count in
+    ///         await input.request(.countChanged(count))
     ///     }
     /// ```
     ///
@@ -83,7 +87,7 @@ extension Effect {
     ///   - name: Optional name for the underlying task. Defaults to `"observe"`.
     ///   - priority: Optional `TaskPriority` for the underlying task.
     ///   - handler: Called with `input` and the current value on the initial read and on
-    ///     every subsequent change. `async` — use `await input.perform(…)` to wait for the
+    ///     every subsequent change. `async` — use `await input.request(…)` to wait for the
     ///     view to settle before the next observation cycle.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     public static func observe<Object, Value>(
@@ -91,7 +95,7 @@ extension Effect {
         keyPath: KeyPath<Object, Value>,
         name: String? = "observe",
         priority: TaskPriority? = nil,
-        handler: @escaping @MainActor @Sendable (Input<Event>, Value) async -> Void
+        handler: @escaping @MainActor @Sendable (Input<Event, Output>, Value) async -> Void
     ) -> Self
     where Object: Observable & AnyObject & Sendable, Value: Sendable
     {
@@ -100,6 +104,7 @@ extension Effect {
             await observeKeyPath(object, keyPath: box.keyPath) { value in
                 await handler(input, value)
             }
+            return nil
         }
     } 
 
@@ -117,12 +122,9 @@ private struct SendableKeyPath<Root, Value>: @unchecked Sendable {
     let keyPath: KeyPath<Root, Value>
 }
 
-/// Observes a key path on an `@Observable` object, calling `handler` with each new value
-/// until the current task is cancelled or `object` is deallocated.
-///
-/// On macOS 26+ / iOS 26+ uses `Observations.untilFinished` — a structured `AsyncSequence`
-/// with cooperative cancellation. On earlier OS versions falls back to
-/// `withObservationTracking` with recursive re-registration.
+/// Observes a key path on an `@Observable` object, calling `handler`
+/// with each new value until the task is cancelled or `object` is
+/// deallocated.
 @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
 @MainActor
 public func observeKeyPath<Object, Value>(
@@ -150,8 +152,8 @@ public func observeKeyPath<Object, Value>(
 ///
 /// `onChange` fires *before* the new value is committed and on an arbitrary thread, so a
 /// child `Task` hops to `@MainActor` to read the settled value. One unstructured task may
-/// outlive cancellation by a single iteration — this is benign because `input.perform` on
-/// a completed `EffectView` is a no-op.
+/// outlive cancellation by a single iteration — this is benign because
+/// `input.request` on a completed `EffectView` is a no-op.
 @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
 @MainActor
 private func _observeKeyPath_legacy<Object, Value>(
